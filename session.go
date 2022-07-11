@@ -68,52 +68,53 @@ func home(w http.ResponseWriter, req *http.Request) {
 		return
 	}
 
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	http.ServeFile(w, req, "html/index.html")
 }
 
-func login(w http.ResponseWriter, req *http.Request) {
-	if req.Method == http.MethodGet || req.Method == http.MethodHead ||
-		req.Method == http.MethodOptions {
-		http.ServeFile(w, req, "html/login.html")
-		return
-	}
-	if req.Method != http.MethodPost {
-		http.Error(w, http.StatusText(http.StatusMethodNotAllowed),
-			http.StatusMethodNotAllowed)
-		return
-	}
+func login(field string) http.HandlerFunc {
+	return func(w http.ResponseWriter, req *http.Request) {
+		if req.Method == http.MethodGet || req.Method == http.MethodHead ||
+			req.Method == http.MethodOptions {
+			http.ServeFile(w, req, "html/login.html")
+			return
+		}
+		if req.Method != http.MethodPost {
+			http.Error(w, http.StatusText(http.StatusMethodNotAllowed),
+				http.StatusMethodNotAllowed)
+			return
+		}
 
-	req.Body = http.MaxBytesReader(w, req.Body, 1<<20)
-	err := req.ParseMultipartForm(0)
-	if err != nil && !errors.Is(err, http.ErrNotMultipart) {
-		http.Error(w, http.StatusText(http.StatusBadRequest),
-			http.StatusBadRequest)
-		return
-	}
-	defer req.Body.Close()
+		req.Body = http.MaxBytesReader(w, req.Body, 1<<20)
+		err := req.ParseMultipartForm(0)
+		if err != nil && !errors.Is(err, http.ErrNotMultipart) {
+			http.Error(w, http.StatusText(http.StatusBadRequest),
+				http.StatusBadRequest)
+			return
+		}
+		defer req.Body.Close()
 
-	username := req.PostForm.Get("username")
-	password := req.PostForm.Get("password")
-	spki := req.PostForm.Get("spki")
+		username := req.PostForm.Get("username")
+		password := req.PostForm.Get("password")
+		spki := req.PostForm.Get(field)
 
-	if !allow(username, password) || spki == "" {
-		http.Redirect(w, req, "/login", http.StatusSeeOther)
-		return
-	}
+		if !allow(username, password) || spki == "" {
+			http.Redirect(w, req, "/login", http.StatusSeeOther)
+			return
+		}
 
-	t := token(w)
-	c := challenge(w)
-	sessions.Lock()
-	sessions.sessions[t] = Session{
-		Username:   username,
-		Challenge:  c,
-		SPKI:       spki,
-		IssuedAt:   time.Now().UTC(),
-		Expiration: time.Now().UTC().Add(5 * time.Minute),
+		t := token(w)
+		c := challenge(w)
+		sessions.Lock()
+		sessions.sessions[t] = Session{
+			Username:   username,
+			Challenge:  c,
+			SPKI:       spki,
+			IssuedAt:   time.Now().UTC(),
+			Expiration: time.Now().UTC().Add(5 * time.Minute),
+		}
+		sessions.Unlock()
+		http.Redirect(w, req, "/", http.StatusSeeOther)
 	}
-	sessions.Unlock()
-	http.Redirect(w, req, "/", http.StatusSeeOther)
 }
 
 func logout(w http.ResponseWriter, req *http.Request) {
@@ -348,7 +349,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.Handle("/css/", http.FileServer(http.Dir("")))
 	mux.Handle("/js/", http.FileServer(http.Dir("")))
-	mux.HandleFunc("/login", login)
+	mux.HandleFunc("/login", login("spki"))
 	mux.HandleFunc("/logout", logout)
 	mux.HandleFunc("/submit", form(submit, "sign", 1<<18))
 	mux.HandleFunc("/link", header(link, "X-XSRF-Token"))

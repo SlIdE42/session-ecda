@@ -47,8 +47,8 @@
     });
   }
 
-  function submitSPKI(event) {
-    const node = event.target.querySelector("input[name=spki]");
+  function submitSPKI(event, selector) {
+    const node = event.target.querySelector(selector);
 
     return new Promise(function (resolve, reject) {
       if (!node) {
@@ -66,8 +66,8 @@
     });
   }
 
-  function submitSignature(event) {
-    const node = event.target.querySelector("input[name=sign]");
+  function submitSignature(event, selector) {
+    const node = event.target.querySelector(selector);
 
     return new Promise(function (resolve, reject) {
       if (!node) {
@@ -160,10 +160,13 @@
 
   window.addEventListener("submit", function (event) {
     event.preventDefault();
-    Promise.all([submitSPKI(event), submitSignature(event)])
+    Promise.all([
+      submitSPKI(event, "input[name=spki]"),
+      submitSignature(event, "input[name=sign]"),
+    ])
       .then(function () {
         // event.target.submit();
-        const method = event.target.getAttribute("method");
+        const method = event.target.getAttribute("method") || "POST";
         const action = event.target.getAttribute("action");
         const formData = new FormData(event.target);
         fetch(action, {
