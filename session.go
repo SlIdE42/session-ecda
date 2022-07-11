@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
+	"errors"
 	"log"
 	"math/big"
 	mathRand "math/rand"
@@ -85,7 +86,7 @@ func login(w http.ResponseWriter, req *http.Request) {
 
 	req.Body = http.MaxBytesReader(w, req.Body, 1<<20)
 	err := req.ParseMultipartForm(0)
-	if err != nil {
+	if err != nil && !errors.Is(err, http.ErrNotMultipart) {
 		http.Error(w, http.StatusText(http.StatusBadRequest),
 			http.StatusBadRequest)
 		return
@@ -116,21 +117,7 @@ func login(w http.ResponseWriter, req *http.Request) {
 }
 
 func logout(w http.ResponseWriter, req *http.Request) {
-	cookie, err := req.Cookie("token")
-	if err == nil {
-		sessions.Lock()
-		delete(sessions.sessions, cookie.Value)
-		sessions.Unlock()
-	}
-	http.SetCookie(w, &http.Cookie{
-		Name:     "token",
-		Value:    "",
-		Path:     "/",
-		MaxAge:   -1,
-		Secure:   true,
-		HttpOnly: true,
-		SameSite: http.SameSiteStrictMode,
-	})
+	clear(w, req)
 	http.Redirect(w, req, "/login", http.StatusSeeOther)
 }
 
@@ -269,6 +256,33 @@ func token(w http.ResponseWriter) string {
 		SameSite: http.SameSiteStrictMode,
 	})
 	return t
+}
+
+func clear(w http.ResponseWriter, req *http.Request) {
+	cookie, err := req.Cookie("token")
+	if err == nil {
+		sessions.Lock()
+		delete(sessions.sessions, cookie.Value)
+		sessions.Unlock()
+	}
+	http.SetCookie(w, &http.Cookie{
+		Name:     "token",
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		Secure:   true,
+		HttpOnly: true,
+		SameSite: http.SameSiteStrictMode,
+	})
+	http.SetCookie(w, &http.Cookie{
+		Name:     "challenge",
+		Value:    "",
+		Path:     "/",
+		MaxAge:   -1,
+		Secure:   true,
+		HttpOnly: false,
+		SameSite: http.SameSiteStrictMode,
+	})
 }
 
 func check(spki string, data string, digest string) bool {
