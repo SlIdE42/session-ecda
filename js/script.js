@@ -128,19 +128,29 @@
     if (event.target.nodeName === "A") {
       event.preventDefault();
       const href = event.target.getAttribute("href");
-      fetch(href, { credentials: "include", redirect: "follow" })
-        .then(function (response) {
-          if (!response.ok) {
-            throw new Error(response.statusText);
-          }
-          history.pushState({}, "", response.url);
-          return response.text();
-        })
-        .then(function (text) {
-          const html = new DOMParser().parseFromString(text, "text/html");
-          document.body = html.body;
-          document.title = html.title;
-          enable();
+      sign(worker, getCookie("challenge"))
+        .then(function (signature) {
+          fetch(href, {
+            credentials: "include",
+            redirect: "follow",
+            headers: new Headers({ "X-XSRF-Token": signature }),
+          })
+            .then(function (response) {
+              if (!response.ok) {
+                throw new Error(response.statusText);
+              }
+              history.pushState({}, "", response.url);
+              return response.text();
+            })
+            .then(function (text) {
+              const html = new DOMParser().parseFromString(text, "text/html");
+              document.body = html.body;
+              document.title = html.title;
+              enable();
+            })
+            .catch(function (err) {
+              window.alert(err);
+            });
         })
         .catch(function (err) {
           window.alert(err);

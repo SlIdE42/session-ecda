@@ -122,30 +122,11 @@ func logout(w http.ResponseWriter, req *http.Request) {
 }
 
 func submit(w http.ResponseWriter, req *http.Request) {
-	if req.Method != http.MethodPost {
-		http.Error(w, http.StatusText(http.StatusMethodNotAllowed),
-			http.StatusMethodNotAllowed)
-		return
-	}
-
-	req.Body = http.MaxBytesReader(w, req.Body, 1<<20)
-	err := req.ParseMultipartForm(0)
-	if err != nil && !errors.Is(err, http.ErrNotMultipart) {
-		http.Error(w, http.StatusText(http.StatusBadRequest),
-			http.StatusBadRequest)
-		return
-	}
-	defer req.Body.Close()
-
-	digest := req.PostForm.Get("sign")
-	spki := req.Context().Value("spki").(string)
-	challenge := req.Context().Value("challenge").(string)
-	if !check(spki, challenge, digest) {
-		http.Error(w, http.StatusText(http.StatusForbidden),
-			http.StatusForbidden)
-		return
-	}
 	http.ServeFile(w, req, "html/submit.html")
+}
+
+func link(w http.ResponseWriter, req *http.Request) {
+	http.ServeFile(w, req, "html/link.html")
 }
 
 func auth(next http.Handler) http.Handler {
@@ -188,17 +169,52 @@ func auth(next http.Handler) http.Handler {
 	})
 }
 
-// func csrf(next http.Handler) http.Handler {
-// 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-// 		if r.Method == http.MethodGet || r.Method == http.MethodHead ||
-// 			r.Method == http.MethodOptions {
-// 			next.ServeHTTP(w, r)
-// 			return
-// 		}
-//
-// 		next.ServeHTTP(w, r)
-// 	})
-// }
+func form(next http.HandlerFunc, token string, n int64) http.HandlerFunc {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if req.Method != http.MethodPost {
+			http.Error(w, http.StatusText(http.StatusMethodNotAllowed),
+				http.StatusMethodNotAllowed)
+			return
+		}
+
+		req.Body = http.MaxBytesReader(w, req.Body, n)
+		err := req.ParseMultipartForm(0)
+		if err != nil && !errors.Is(err, http.ErrNotMultipart) {
+			http.Error(w, http.StatusText(http.StatusBadRequest),
+				http.StatusBadRequest)
+			return
+		}
+		defer req.Body.Close()
+
+		digest := req.PostForm.Get(token)
+		spki := req.Context().Value("spki").(string)
+		challenge := req.Context().Value("challenge").(string)
+
+		if !check(spki, challenge, digest) {
+			http.Error(w, http.StatusText(http.StatusForbidden),
+				http.StatusForbidden)
+			return
+		}
+
+		next.ServeHTTP(w, req)
+	})
+}
+
+func header(next http.HandlerFunc, token string) http.HandlerFunc {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		digest := req.Header.Get(token)
+		spki := req.Context().Value("spki").(string)
+		challenge := req.Context().Value("challenge").(string)
+
+		if !check(spki, challenge, digest) {
+			http.Error(w, http.StatusText(http.StatusForbidden),
+				http.StatusForbidden)
+			return
+		}
+
+		next.ServeHTTP(w, req)
+	})
+}
 
 func security(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -334,7 +350,8 @@ func main() {
 	mux.Handle("/js/", http.FileServer(http.Dir("")))
 	mux.HandleFunc("/login", login)
 	mux.HandleFunc("/logout", logout)
-	mux.HandleFunc("/submit", submit)
+	mux.HandleFunc("/submit", form(submit, "sign", 1<<18))
+	mux.HandleFunc("/link", header(link, "X-XSRF-Token"))
 	mux.HandleFunc("/", home)
 
 	go clean()
