@@ -130,7 +130,7 @@ func submit(w http.ResponseWriter, req *http.Request) {
 
 	req.Body = http.MaxBytesReader(w, req.Body, 1<<20)
 	err := req.ParseMultipartForm(0)
-	if err != nil {
+	if err != nil && !errors.Is(err, http.ErrNotMultipart) {
 		http.Error(w, http.StatusText(http.StatusBadRequest),
 			http.StatusBadRequest)
 		return
@@ -200,7 +200,7 @@ func auth(next http.Handler) http.Handler {
 // 	})
 // }
 
-func headers(next http.Handler) http.Handler {
+func security(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Security-Policy", "default-src 'self'; object-src 'none';")
 		w.Header().Set("X-Frame-Options", "deny")
@@ -340,7 +340,7 @@ func main() {
 	go clean()
 	s := &http.Server{
 		Addr:           ":8080",
-		Handler:        headers(auth(mux)),
+		Handler:        security(auth(mux)),
 		ReadTimeout:    10 * time.Second,
 		WriteTimeout:   10 * time.Second,
 		MaxHeaderBytes: 1 << 20,
