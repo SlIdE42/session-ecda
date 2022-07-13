@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"crypto/ecdsa"
 	cryptoRand "crypto/rand"
 	"crypto/sha512"
@@ -28,6 +27,11 @@ type Session struct {
 	SPKI       string
 	IssuedAt   time.Time `json:"iat"`
 	Expiration time.Time `json:"exp"`
+}
+
+func (session Session) expired() bool {
+	return time.Now().After(session.Expiration) ||
+		time.Since(session.IssuedAt) > 1*time.Hour
 }
 
 type Sessions struct {
@@ -62,6 +66,13 @@ func public(u *url.URL) bool {
 	return false
 }
 
+func protected(u *url.URL) bool {
+	if u.Path == "/" || u.Path == "/logout" {
+		return false
+	}
+	return true
+}
+
 func home(w http.ResponseWriter, req *http.Request) {
 	if req.URL.Path != "/" {
 		http.NotFound(w, req)
@@ -71,50 +82,48 @@ func home(w http.ResponseWriter, req *http.Request) {
 	http.ServeFile(w, req, "html/index.html")
 }
 
-func login(field string) http.HandlerFunc {
-	return func(w http.ResponseWriter, req *http.Request) {
-		if req.Method == http.MethodGet || req.Method == http.MethodHead ||
-			req.Method == http.MethodOptions {
-			http.ServeFile(w, req, "html/login.html")
-			return
-		}
-		if req.Method != http.MethodPost {
-			http.Error(w, http.StatusText(http.StatusMethodNotAllowed),
-				http.StatusMethodNotAllowed)
-			return
-		}
-
-		req.Body = http.MaxBytesReader(w, req.Body, 1<<20)
-		err := req.ParseMultipartForm(0)
-		if err != nil && !errors.Is(err, http.ErrNotMultipart) {
-			http.Error(w, http.StatusText(http.StatusBadRequest),
-				http.StatusBadRequest)
-			return
-		}
-		defer req.Body.Close()
-
-		username := req.PostForm.Get("username")
-		password := req.PostForm.Get("password")
-		spki := req.PostForm.Get(field)
-
-		if !allow(username, password) || spki == "" {
-			http.Redirect(w, req, "/login", http.StatusSeeOther)
-			return
-		}
-
-		t := token(w)
-		c := challenge(w)
-		sessions.Lock()
-		sessions.sessions[t] = Session{
-			Username:   username,
-			Challenge:  c,
-			SPKI:       spki,
-			IssuedAt:   time.Now().UTC(),
-			Expiration: time.Now().UTC().Add(5 * time.Minute),
-		}
-		sessions.Unlock()
-		http.Redirect(w, req, "/", http.StatusSeeOther)
+func login(w http.ResponseWriter, req *http.Request) {
+	if req.Method == http.MethodGet || req.Method == http.MethodHead ||
+		req.Method == http.MethodOptions {
+		http.ServeFile(w, req, "html/login.html")
+		return
 	}
+	if req.Method != http.MethodPost {
+		http.Error(w, http.StatusText(http.StatusMethodNotAllowed),
+			http.StatusMethodNotAllowed)
+		return
+	}
+
+	req.Body = http.MaxBytesReader(w, req.Body, 1<<20)
+	err := req.ParseMultipartForm(0)
+	if err != nil && !errors.Is(err, http.ErrNotMultipart) {
+		http.Error(w, http.StatusText(http.StatusBadRequest),
+			http.StatusBadRequest)
+		return
+	}
+	defer req.Body.Close()
+
+	username := req.PostForm.Get("username")
+	password := req.PostForm.Get("password")
+	spki := req.Header.Get("SPKI")
+
+	if !allow(username, password) || spki == "" {
+		http.Redirect(w, req, "/login", http.StatusSeeOther)
+		return
+	}
+
+	t := token(w)
+	c := challenge(w)
+	sessions.Lock()
+	sessions.sessions[t] = Session{
+		Username:   username,
+		Challenge:  c,
+		SPKI:       spki,
+		IssuedAt:   time.Now().UTC(),
+		Expiration: time.Now().UTC().Add(5 * time.Minute),
+	}
+	sessions.Unlock()
+	http.Redirect(w, req, "/", http.StatusSeeOther)
 }
 
 func logout(w http.ResponseWriter, req *http.Request) {
@@ -145,16 +154,14 @@ func auth(next http.Handler) http.Handler {
 
 		sessions.Lock()
 		session, ok := sessions.sessions[cookie.Value]
-		if !ok || time.Now().After(session.Expiration) ||
-			time.Since(session.IssuedAt) > 1*time.Hour {
+		if !ok || session.expired() {
 			sessions.Unlock()
 			http.Redirect(w, r, "/login", http.StatusSeeOther)
 			return
 		}
 
 		delete(sessions.sessions, cookie.Value)
-		t := token(w)
-		sessions.sessions[t] = Session{
+		sessions.sessions[token(w)] = Session{
 			Username:   session.Username,
 			Challenge:  challenge(w),
 			SPKI:       session.SPKI,
@@ -163,57 +170,18 @@ func auth(next http.Handler) http.Handler {
 		}
 		sessions.Unlock()
 
-		ctx := context.WithValue(r.Context(), "username", session.Username)
-		ctx = context.WithValue(ctx, "spki", session.SPKI)
-		ctx = context.WithValue(ctx, "challenge", session.Challenge)
-		next.ServeHTTP(w, r.WithContext(ctx))
-	})
-}
-
-func form(next http.HandlerFunc, token string, n int64) http.HandlerFunc {
-	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		if req.Method != http.MethodPost {
-			http.Error(w, http.StatusText(http.StatusMethodNotAllowed),
-				http.StatusMethodNotAllowed)
+		if !protected(r.URL) {
+			next.ServeHTTP(w, r)
 			return
 		}
 
-		req.Body = http.MaxBytesReader(w, req.Body, n)
-		err := req.ParseMultipartForm(0)
-		if err != nil && !errors.Is(err, http.ErrNotMultipart) {
-			http.Error(w, http.StatusText(http.StatusBadRequest),
-				http.StatusBadRequest)
-			return
-		}
-		defer req.Body.Close()
-
-		digest := req.PostForm.Get(token)
-		spki := req.Context().Value("spki").(string)
-		challenge := req.Context().Value("challenge").(string)
-
-		if !check(spki, challenge, digest) {
+		signature := r.Header.Get("X-XSRF-TOKEN")
+		if !check(session.SPKI, session.Challenge, signature) {
 			http.Error(w, http.StatusText(http.StatusForbidden),
 				http.StatusForbidden)
 			return
 		}
-
-		next.ServeHTTP(w, req)
-	})
-}
-
-func header(next http.HandlerFunc, token string) http.HandlerFunc {
-	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
-		digest := req.Header.Get(token)
-		spki := req.Context().Value("spki").(string)
-		challenge := req.Context().Value("challenge").(string)
-
-		if !check(spki, challenge, digest) {
-			http.Error(w, http.StatusText(http.StatusForbidden),
-				http.StatusForbidden)
-			return
-		}
-
-		next.ServeHTTP(w, req)
+		next.ServeHTTP(w, r)
 	})
 }
 
@@ -232,8 +200,7 @@ func clean() {
 	for range time.Tick(1 * time.Minute) {
 		sessions.Lock()
 		for token, session := range sessions.sessions {
-			if time.Now().After(session.Expiration) ||
-				time.Since(session.IssuedAt) > 1*time.Hour {
+			if session.expired() {
 				delete(sessions.sessions, token)
 			}
 		}
@@ -242,7 +209,7 @@ func clean() {
 }
 
 func challenge(w http.ResponseWriter) string {
-	c, err := generate(18, mathRand.Read)
+	c, err := generate(9, mathRand.Read)
 	if err != nil {
 		panic(err)
 	}
@@ -259,7 +226,7 @@ func challenge(w http.ResponseWriter) string {
 }
 
 func token(w http.ResponseWriter) string {
-	t, err := generate(18, cryptoRand.Read)
+	t, err := generate(33, cryptoRand.Read)
 	if err != nil {
 		panic(err)
 	}
@@ -349,10 +316,10 @@ func main() {
 	mux := http.NewServeMux()
 	mux.Handle("/css/", http.FileServer(http.Dir("")))
 	mux.Handle("/js/", http.FileServer(http.Dir("")))
-	mux.HandleFunc("/login", login("spki"))
+	mux.HandleFunc("/login", login)
 	mux.HandleFunc("/logout", logout)
-	mux.HandleFunc("/submit", form(submit, "sign", 1<<18))
-	mux.HandleFunc("/link", header(link, "X-XSRF-Token"))
+	mux.HandleFunc("/submit", submit)
+	mux.HandleFunc("/link", link)
 	mux.HandleFunc("/", home)
 
 	go clean()

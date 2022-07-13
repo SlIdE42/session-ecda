@@ -47,45 +47,6 @@
     });
   }
 
-  function submitSPKI(event, selector) {
-    const node = event.target.querySelector(selector);
-
-    return new Promise(function (resolve, reject) {
-      if (!node) {
-        return resolve();
-      }
-
-      return spki(worker)
-        .then(function (spki) {
-          node.setAttribute("value", spki);
-          return resolve();
-        })
-        .catch(function (err) {
-          return reject(err);
-        });
-    });
-  }
-
-  function submitSignature(event, selector) {
-    const node = event.target.querySelector(selector);
-
-    return new Promise(function (resolve, reject) {
-      if (!node) {
-        return resolve();
-      }
-
-      const data = getCookie("challenge");
-      return sign(worker, data)
-        .then(function (signature) {
-          node.setAttribute("value", signature);
-          return resolve();
-        })
-        .catch(function (err) {
-          return reject(err);
-        });
-    });
-  }
-
   if (!("crypto" in window || !("subtle" in window.crypto))) {
     window.alert("SubtleCrypto not available!");
     return;
@@ -113,14 +74,11 @@
     enable();
   }
 
-  // worker.addEventListener("message", function (e) {});
-
-  // setInterval(() => {
-  //   worker.postMessage("ping");
-  // }, 1000);
+  worker.addEventListener("error", function (error) {
+    console.error(error);
+  });
 
   worker.addEventListener("messageerror", function (error) {
-    window.alert(error);
     console.error(error);
   });
 
@@ -160,20 +118,17 @@
 
   window.addEventListener("submit", function (event) {
     event.preventDefault();
-    Promise.all([
-      submitSPKI(event, "input[name=spki]"),
-      submitSignature(event, "input[name=sign]"),
-    ])
-      .then(function () {
+    Promise.all([spki(worker), sign(worker, getCookie("challenge"))])
+      .then(function ([key, signature]) {
         // event.target.submit();
-        const method = event.target.getAttribute("method") || "POST";
         const action = event.target.getAttribute("action");
         const formData = new FormData(event.target);
         fetch(action, {
           credentials: "include",
-          method: method,
+          method: "POST",
           body: formData,
           redirect: "follow",
+          headers: new Headers({ SPKI: key, "X-XSRF-TOKEN": signature }),
         })
           .then(function (response) {
             if (!response.ok) {
@@ -194,7 +149,6 @@
       })
       .catch(function (err) {
         window.alert(err);
-        console.error(err);
       });
   });
 })();
